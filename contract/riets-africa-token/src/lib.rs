@@ -27,6 +27,7 @@ use near_sdk::{
 };
 use near_sdk::json_types::Base64VecU8;
 use iso8601::datetime;
+use std::collections::HashMap;
 
 
 #[derive(Default, BorshDeserialize, BorshSerialize)]
@@ -53,7 +54,7 @@ impl TokenCounter {
 pub struct RietsToken {
     tokens: NonFungibleToken,
     metadata: LazyOption<NFTContractMetadata>,
-    tokenCounter: TokenCounter,
+    token_counter: TokenCounter
     
 }
 
@@ -93,7 +94,7 @@ impl RietsToken {
                 Some(StorageKey::Approval),
             ),
             metadata: LazyOption::new(StorageKey::Metadata, Some(&metadata)),
-            tokenCounter: TokenCounter::new()
+            token_counter: TokenCounter::new()
         }
     }
 
@@ -130,24 +131,84 @@ impl RietsToken {
             reference: Some(doc_url.clone()),
             reference_hash: Some(Base64VecU8::from(doc_url.as_bytes().to_vec())),
         };
-        let token_id = self.tokenCounter.increment().to_string();
+        let token_id = self.token_counter.increment().to_string();
         assert_eq!(env::predecessor_account_id(), self.tokens.owner_id, "Unauthorized");
         self.tokens.internal_mint(token_id, token_owner_id.clone(), Some(token_metadata))
     }
 
-    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<TokenMetadata> {
+    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<(TokenId, TokenMetadata)> {
 
-        let tokens = &self.tokens.tokens_per_owner;
+        // let tokens = &mut self.tokens.tokens_per_owner;
 
-        let t = &tokens.clone();
+        let mut user_tokens = Vec::new();
+        let mut return_value = Vec::new();
 
-        let user_tokens = t.unwrap_or(LookupMap::new(b"m")).get(&account_id).unwrap_or(UnorderedSet::new(b"s"));
+        if let Some(tokens_per_owner) = &self.tokens.tokens_per_owner {
+            user_tokens = tokens_per_owner.get(&account_id).unwrap_or(UnorderedSet::new(b"s")).to_vec();
+        }
 
-        // for token in user_tokens.iter() {
+        if let Some(token_metadata_by_id) = &self.tokens.token_metadata_by_id {
 
-        // }
+            return_value = user_tokens.into_iter().map(|token_id| {
+                let metadata = token_metadata_by_id.get(&token_id).unwrap();
 
-        Vec::new()
+                (token_id, metadata)
+            }).collect();
+            
+        }
+
+        return_value
+        
+    }
+
+    pub fn get_token(&self, token_id: TokenId) -> Token {
+
+        self.tokens.nft_token(token_id).unwrap_or_else(|| env::panic_str("Token with provided ID doesn't exist"))
+    }
+
+    pub fn approve_token_spender(&mut self, spender: AccountId, token_id: TokenId) {
+        let owner = self.tokens.owner_by_id.get(&token_id).unwrap();
+
+        require!(owner == env::signer_account_id(), "NFT Approve: Unauthorized");
+
+        if let Some(next_approval_id_by_id) = &mut self.tokens.next_approval_id_by_id {
+
+            let approval_id = next_approval_id_by_id.get(&token_id).unwrap_or(1);
+
+            if let Some(approval_by_id) = &mut self.tokens.approvals_by_id {
+
+                let mut app_id = approval_by_id.get(&token_id).unwrap_or(HashMap::new());
+
+                app_id.insert(spender.clone(), approval_id.clone());
+
+                approval_by_id.insert(&token_id, &app_id);
+            }
+
+            let next_approval_id = approval_id + 1;
+
+            next_approval_id_by_id.insert(&token_id, &next_approval_id);
+
+        }
+        
+    }
+
+    pub fn transfer_token(&mut self, token_id: TokenId, receiver: AccountId) {
+
+        let mut approval_id = None;
+        let sender = env::predecessor_account_id();
+
+        if let Some(approval_by_id) = &mut self.tokens.approvals_by_id {
+
+            let app_id = approval_by_id.get(&token_id).unwrap_or(HashMap::new());
+
+            approval_id = Some(app_id[&sender]);
+        }
+
+        let previous_owner = self.tokens.owner_by_id.get(&token_id).unwrap();
+
+        let memo = format!("Transfer for sale of property split with token ID {} from {} to {}", &token_id, previous_owner, &receiver);
+
+        self.tokens.internal_transfer(&sender, &receiver, &token_id, approval_id.clone(), Some(memo));
     }
 }
 
@@ -162,220 +223,3 @@ impl NonFungibleTokenMetadataProvider for RietsToken {
     }
 }
 
-// #[cfg(all(test, not(target_arch = "wasm32")))]
-// mod tests {
-//     use near_sdk::test_utils::{accounts, VMContextBuilder};
-//     use near_sdk::testing_env;
-//     use std::collections::HashMap;
-
-//     use super::*;
-
-//     const MINT_STORAGE_COST: u128 = 5870000000000000000000;
-
-//     fn get_context(predecessor_account_id: AccountId) -> VMContextBuilder {
-//         let mut builder = VMContextBuilder::new();
-//         builder
-//             .current_account_id(accounts(0))
-//             .signer_account_id(predecessor_account_id.clone())
-//             .predecessor_account_id(predecessor_account_id);
-//         builder
-//     }
-
-//     fn sample_token_metadata() -> TokenMetadata {
-//         TokenMetadata {
-//             title: Some("EA Kazi Certificate".into()),
-//             description: Some("Certificate for completion of Blockchain course".into()),
-//             media: None,
-//             media_hash: None,
-//             copies: Some(1u64),
-//             issued_at: None,
-//             expires_at: None,
-//             starts_at: None,
-//             updated_at: None,
-//             extra: None,
-//             reference: None,
-//             reference_hash: None,
-//         }
-//     }
-
-//     #[test]
-//     fn test_new() {
-//         let mut context = get_context(accounts(1));
-//         testing_env!(context.build());
-//         let contract = EAKaziCertificate::new();
-//         testing_env!(context.is_view(true).build());
-//         assert_eq!(contract.nft_token("1".to_string()), None);
-//     }
-
-//     #[test]
-//     #[should_panic(expected = "The contract is not initialized")]
-//     // fn test_default() {
-//     //     let context = get_context(accounts(1));
-//     //     testing_env!(context.build());
-//     //     let _contract = EAKaziCertificate::default();
-//     // }
-
-//     #[test]
-//     fn test_mint() {
-//         let mut context = get_context(accounts(0));
-//         testing_env!(context.build());
-//         let mut contract = EAKaziCertificate::new_default_meta(accounts(0).into());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(MINT_STORAGE_COST)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-
-//         let token_id = "0".to_string();
-//         let token = contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
-//         assert_eq!(token.token_id, token_id);
-//         assert_eq!(token.owner_id, accounts(0));
-//         assert_eq!(token.metadata.unwrap(), sample_token_metadata());
-//         assert_eq!(token.approved_account_ids.unwrap(), HashMap::new());
-//     }
-
-//     #[test]
-//     fn test_transfer() {
-//         let mut context = get_context(accounts(0));
-//         testing_env!(context.build());
-//         let mut contract = Contract::new_default_meta(accounts(0).into());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(MINT_STORAGE_COST)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         let token_id = "0".to_string();
-//         contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(1)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_transfer(accounts(1), token_id.clone(), None, None);
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .account_balance(env::account_balance())
-//             .is_view(true)
-//             .attached_deposit(0)
-//             .build());
-//         if let Some(token) = contract.nft_token(token_id.clone()) {
-//             assert_eq!(token.token_id, token_id);
-//             assert_eq!(token.owner_id, accounts(1));
-//             assert_eq!(token.metadata.unwrap(), sample_token_metadata());
-//             assert_eq!(token.approved_account_ids.unwrap(), HashMap::new());
-//         } else {
-//             panic!("token not correctly created, or not found by nft_token");
-//         }
-//     }
-
-//     #[test]
-//     fn test_approve() {
-//         let mut context = get_context(accounts(0));
-//         testing_env!(context.build());
-//         let mut contract = Contract::new_default_meta(accounts(0).into());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(MINT_STORAGE_COST)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         let token_id = "0".to_string();
-//         contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
-
-//         // alice approves bob
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(150000000000000000000)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_approve(token_id.clone(), accounts(1), None);
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .account_balance(env::account_balance())
-//             .is_view(true)
-//             .attached_deposit(0)
-//             .build());
-//         assert!(contract.nft_is_approved(token_id.clone(), accounts(1), Some(1)));
-//     }
-
-//     #[test]
-//     fn test_revoke() {
-//         let mut context = get_context(accounts(0));
-//         testing_env!(context.build());
-//         let mut contract = Contract::new_default_meta(accounts(0).into());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(MINT_STORAGE_COST)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         let token_id = "0".to_string();
-//         contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
-
-//         // alice approves bob
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(150000000000000000000)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_approve(token_id.clone(), accounts(1), None);
-
-//         // alice revokes bob
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(1)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_revoke(token_id.clone(), accounts(1));
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .account_balance(env::account_balance())
-//             .is_view(true)
-//             .attached_deposit(0)
-//             .build());
-//         assert!(!contract.nft_is_approved(token_id.clone(), accounts(1), None));
-//     }
-
-//     #[test]
-//     fn test_revoke_all() {
-//         let mut context = get_context(accounts(0));
-//         testing_env!(context.build());
-//         let mut contract = Contract::new_default_meta(accounts(0).into());
-
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(MINT_STORAGE_COST)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         let token_id = "0".to_string();
-//         contract.nft_mint(token_id.clone(), accounts(0), sample_token_metadata());
-
-//         // alice approves bob
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(150000000000000000000)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_approve(token_id.clone(), accounts(1), None);
-
-//         // alice revokes bob
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .attached_deposit(1)
-//             .predecessor_account_id(accounts(0))
-//             .build());
-//         contract.nft_revoke_all(token_id.clone());
-//         testing_env!(context
-//             .storage_usage(env::storage_usage())
-//             .account_balance(env::account_balance())
-//             .is_view(true)
-//             .attached_deposit(0)
-//             .build());
-//         assert!(!contract.nft_is_approved(token_id.clone(), accounts(1), Some(1)));
-//     }
-// }

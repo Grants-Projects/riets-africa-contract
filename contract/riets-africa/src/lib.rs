@@ -3,7 +3,7 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, LazyOption, LookupSet};
 use near_sdk::json_types::U128;
 use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, ext_contract, require};
-use near_contract_standards::non_fungible_token::{Token, TokenId};
+use near_contract_standards::non_fungible_token::{Token, TokenId, metadata::TokenMetadata};
 
 pub const NFT_CONTRACT: &str = "certificate.eakazi.testnet";
 pub const XCC_GAS: Gas = Gas(20000000000000);
@@ -13,36 +13,50 @@ pub const XCC_GAS: Gas = Gas(20000000000000);
 pub struct Property {
     id: U128,
     name: String,
+    image: String,
     property_identifier: String,
     valuation: Balance,
-    property_splits: Vec<PropertySplit>
+    split_ids: Vec<U128>
 }
 
 
 impl Property {
-    pub fn new(id_: U128, name_: String, property_identifier_: String, valuation_: Balance, splits_: u64) -> Self {
+    pub fn new(id_: U128, name_: String, splits_: u64, property_identifier_: String, valuation_: Balance, image_: String) -> Self {
         Self {
             id: id_,
             name: name_,
+            image: image_,
             property_identifier: property_identifier_,
             valuation: valuation_,
-            property_splits: Vec::with_capacity(splits_)
+            split_ids: Vec::with_capacity(splits_)
         }
     }
 
-    pub fn set_valuation(mut self, value: U128) -> bool {
+    pub fn set_valuation(&mut self, value: U128) -> bool {
         self.valuation = value;
         true
     }
+}
+
+pub struct PropertyWithSplits {
+    id: &U128,
+    name: &String,
+    image: &String,
+    property_identifier: &String,
+    valuation: &Balance,
+    property_splits: Vec<PropertySplit>,
 }
 
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct PropertySplit {
     id: U128,
     split_identifier: String,
+    property_id: U128,
     token_id: TokenId,
+    token_metadata: TokenMetadata,
     owner: AccountId,
     last_sale_date: u64
+    on_sale: bool
 }
 
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -50,8 +64,7 @@ pub struct PurchaseOffer {
     id: U128,
     value: Balance,
     buyer: AccountId
-    token_id: TokenId,
-    owner: AccountId
+    token_id: TokenId
 }
 
 
@@ -67,7 +80,21 @@ trait RietsToken {
         image_url: String
     ) -> Token;
 
-    fn get_user_properties
+    fn get_user_properties(
+        &self,
+        account_id: &AccountId
+    ) -> Vec<TokenId>
+
+    fn get_user_properties(
+        &self,
+        account_id: &AccountId
+    ) -> Vec<TokenId>
+
+    fn transfer_token(
+        &self,
+        token_id: TokenId, 
+        receiver: AccountId
+    )
 }
 
 
@@ -75,15 +102,20 @@ trait RietsToken {
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct RietsAfrica {
     properties: Vec<Property>,
+    property_splits: Vec<PropertySplit>
     owner: AccountId,
-    offers: LookupMap<TokenId, Vec<PurchaseOffer>
+    property_split_by_token_id: LookupMap<TokenId, PropertySplit>,
+    offers: LookupMap<U128, Vec<PurchaseOffer>>
 }
 
 impl Default for RietsAfrica {
     fn default() -> Self {
         Self {
             properties: Vec::new(),
-            owner: env::signer_account_id();
+            property_splits: Vec::new(),
+            owner: env::signer_account_id(),
+            property_split_by_token_id: LookupMap::new(b"p"),
+            offers: LookupMap::new(b"o")
         }
     }
 }
@@ -92,15 +124,15 @@ impl Default for RietsAfrica {
 #[near_bindgen]
 impl RietsAfrica {
 
-    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, splits: u64, valuation: Balance, doc_urls: Vec<String>) {
+    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: Balance, doc_urls: Vec<String>) {
         require!(doc_urls.len() == splits, "JSON length supplied do not match number of splits");
 
         let new_property_id = self.properties.len();
 
-        let mut property = Property::new(U128::from(&new_property_id), name, identifier.clone(), valuation, splits);
+        let mut property = Property::new(U128::from(u128::from(&new_property_id) + 1), name, identifier.clone(), valuation, image_url);
         self.properties.push(property);
 
-        let mut split_id = 0;
+        let mut split_id = 1;
 
         for let doc in doc_urls {
 
@@ -122,7 +154,7 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_mint_nft_callback(split_id - 1, &split_identifier, &new_property_id) 
+                    .on_mint_nft_callback(U128::from(u128::from(&new_property_id) + 1), &split_identifier, &new_property_id) 
             );
 
             
@@ -138,237 +170,216 @@ impl RietsAfrica {
     }
 
     #[payable]
-    pub fn make_property_offer(&mut self, property_id: U128, new_valuation: U128) {
-        let mut property = self.properties[u128::from(&property_id)];
-        require!(env::attached_deposit() >= property.valuation, "Not sufficient deposit");
+    pub fn make_property_offer(&mut self, property_split_id: U128) -> PurchaseOffer {
+        
+        let choice_split = self.property_splits[&property_split_id.0 - 1];
 
+        let buyer = env::signer_account_id();
+
+        require!(&buyer != self.owner && &buyer != &choice_split.owner, "Not authorized");
+
+        require!(env::attached_deposit() >= get_split_value(&property_split_id), "Not sufficient deposit to make offer");
+
+        let mut previous_offers_on_split = self.offers.get(&property_split_id).unwrap_or(Vec::new());
+
+        let offer_id = U128::from(&previous_offers_on_split.len() + 1);
+
+        let offer = PurchaseOffer {
+            id: offer_id,
+            value: env::attached_deposit(),
+            buyer: env::signer_account_id(),
+            token_id: choice_split.token_id
+        };
+
+        previous_offers_on_split.push(&offer);
+
+        self.offers.insert(&property_split_id, &previous_offers_on_split);
+
+        offer
 
     }
 
-    pub fn get_user_properties(account_id: String) {
 
+    pub fn sell_property_to_offer(&mut self, property_split_id: U128, offer_id: U128) {
 
-    }
+        let mut property_split = self.property_splits[&property_split_id.0 - 1];
 
+        require!(if &property_split.last_sale_date == 0 {
+            env::signer_account_id() == self.owner
+        } else {
+            env::signer_account_id() == &property_split.owner
+        }, "Not authorised to sell this property");
 
-    
-    pub fn bid_property_unit(&mut self, course_id: U128) {
-        let trainee = env::signer_account_id();
-        let mut registered_trainees = self.enrolments.get(&course_id).unwrap_or_default();
-        registered_trainees.push(trainee);
-        self.enrolments.insert(&course_id, &registered_trainees);
-    }
+        let offers_on_split = self.offers.get(&property_split_id).unwrap_or_else(|| env::panic_str("No offer on this property"));
 
-    pub fn mint_certificate_to_trainee(&mut self, course_id: U128, trainee_id: AccountId, certificate_url: String, issue_date: String) {
-        let course_ = self.get_course_by_id(&course_id).unwrap();
+        let offer = offers_on_split[&offer_id.0 - 1];
 
-        // require!(course_  false, "Course with requested id does not exist");
-        ext_certificate_contract::ext(AccountId::new_unchecked(CERTIFICATE_CONTRACT.to_string()))
-            .nft_mint(
-                trainee_id.clone(),
-                self.course_trainer.get(&course_id).unwrap(),
-                course_.name.clone(),
-                certificate_url,
-                issue_date)
+        ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
+            .transfer_token(
+                offer.token_id,
+                offer.buyer)
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_mint_certificate_callback(trainee_id, course_.skills.clone(), U128::from(course_.id), self.course_trainer.get(&course_id).unwrap())
+                    .on_transfer_token_callback_on_sale(&property_split_id, &property_split, &offer) 
             );
 
-        
     }
 
-    // for jobs exceeding 12 months, 12 month wage would be initially deducted
-    #[payable]
-    pub fn create_job(&mut self, job_id_: U128, name: String, description_: String, skills_: Vec<U128>, wage: U128, number_of_roles: u128, duration: u128) {
+    pub fn place_property_split_on_sale(&mut self, property_split_id: U128) -> PropertySplit {
 
-        let wage_to_pay = wage.0 * number_of_roles * duration;
-        require!(env::attached_deposit() >= wage_to_pay, "Attach wage to be paid to escrow first");
-        let job_owner = env::signer_account_id();
-        let job = Job::new(job_id_, name, description_, skills_, job_owner.clone(), wage, number_of_roles);
-        self.jobs.insert(&job_id_, &job);
-        let previous_wages_in_escrow = self.wages_in_escrow.get(&job_owner).unwrap_or(U128::from(0));
-        let increment_wage = U128::from(wage_to_pay + previous_wages_in_escrow.0);
-        self.wages_in_escrow.insert(&job_owner, &increment_wage);
+        let mut property_split = self.property_splits[&property_split_id.0 - 1];
+        let token_id = &property_split.token_id;
+
+        require!(if &property_split.last_sale_date == 0 {
+            env::signer_account_id() == self.owner
+        } else {
+            env::signer_account_id() == &property_split.owner
+        }, "Not authorised to sell this property");
+
+        property_split.on_sale = true;
+
+        self.property_split_by_token_id.insert(&token_id, &property_split)
+
+        self.property_splits[&property_split_id.0 - 1] = property_split;
+
+        property_split
     }
 
-    pub fn apply_to_job(&mut self, job_id: U128) {
-        require!(self.job_exists(&job_id), "Job with provided id does not exist");
+    pub fn buy_from_sale(&mut self, property_split_id: U128) {
 
-        let applicant = env::signer_account_id();
-        let trainers_for_job = self.user_has_skills_for_job(&applicant, &job_id).unwrap_or_default();
-        
-        require!(trainers_for_job.len() > 0, "You are not skilled enough for the job");
+        let mut property_split = self.property_splits[&property_split_id.0 - 1];
 
-        let mut trainers = Vec::new();
+        let buyer = env::signer_account_id();
 
-        for trainer in trainers_for_job {
-            trainers.push(trainer.clone());
-        }
+        require!(&buyer != self.owner && &buyer != &property_split.owner, "Not authorized");
 
-        let application = JobApplication::new(job_id.clone(), trainers, applicant.clone());
-        let mut apps = self.job_applications.get(&job_id).unwrap();
-        apps.insert(&applicant, &application);
+        require!(&property_split.on_sale, "Property is not available for sale");
 
-        self.job_applications.insert(&job_id, &apps);
+        require!(env::attached_deposit() >= get_split_value(&property_split_id), "Not sufficient deposit to make offer");
 
-    }
-
-    pub fn confirm_job_emloyment(&mut self, job_id: U128, applicant: AccountId) {
-        require!(self.job_exists(&job_id), "Job with provided id does not exist");
-        require!(env::signer_account_id() == self.get_job_by_id(&job_id).unwrap().job_owner, "Only job owner can confirm employment");
-
-        let mut apps = self.job_applications.get(&job_id).unwrap();
-        require!(&apps.contains_key(&applicant), "The applicant has not applied for this job");
-        
-        let mut job_app = apps.get(&applicant).unwrap();
-
-        job_app.status = 1;
-        job_app.start_date = Some(env::block_timestamp());
-        
-        apps.insert(&applicant, &job_app);
-        self.job_applications.insert(&job_id, &apps);
+        ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
+            .transfer_token(
+                offer.token_id,
+                offer.buyer)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(XCC_GAS)
+                    .on_transfer_token_callback_on_sale(&property_split_id, &property_split, &buyer) 
+            );
     }
 
 
-    pub fn end_job_employment(&mut self, job_id: U128, applicant: AccountId) {
-        require!(self.job_exists(&job_id), "Job with provided id does not exist");
-        require!(env::signer_account_id() == self.get_job_by_id(&job_id).unwrap().job_owner, "Only job owner can confirm employment");
+    // returns the value of a split based on the actual property valuation
+    pub fn get_split_value(&self, property_split_id: &U128) -> Balance {
 
-        let mut apps = self.job_applications.get(&job_id).unwrap();
-        require!(&apps.contains_key(&applicant), "The applicant has not applied for this job");
-        
-        let mut job_app = apps.get(&applicant).unwrap();
+        let mut property_split = self.property_splits[property_split_id.0 - 1];
 
-        job_app.status = 2;
-        
-        apps.insert(&applicant, &job_app);
-        self.job_applications.insert(&job_id, &apps);
-    }
+        let property = self.properties[&property_split.property_id.0 - 1];
 
-    pub fn pay_wage(&mut self, job_id: U128, applicant: AccountId) {
-        require!(self.job_exists(&job_id), "Job with provided id does not exist");
-        let job = self.get_job_by_id(&job_id).unwrap();
-        let owner = job.job_owner;
-        require!(env::signer_account_id() == owner.clone(), "Only job owner can confirm wage payment");
+        let value = &property.valuation.0;
+        let splits = u128::from(property.split_ids.len());
 
-        let mut wage_in_excrow = self.wages_in_escrow.get(&owner).unwrap_or(U128::from(0));
-        let wage_for_job = job.wage;
+        let split_value = value*100/splits;
 
-        let application = self.get_job_aplication(&job_id, &applicant).unwrap();
-        let trainers = application.trainers_to_pay;
-
-        let wage_to_applicant = (wage_for_job.0 * 9)/10;
-        let wage_to_trainer = (wage_for_job.0 - wage_to_applicant)/u128::try_from(trainers.len()).unwrap_or(1);
-
-        wage_in_excrow = U128::from(wage_in_excrow.0 - wage_for_job.0);
-
-        Promise::new(applicant).transfer(wage_to_applicant)
-            .then(Self::ext(env::current_account_id())
-                .with_static_gas(XCC_GAS)
-                .on_pay_wage_callback(owner, wage_in_excrow));
-
-        for trainer in trainers {
-            Promise::new(trainer).transfer(wage_to_trainer);
-        }
+        split_value/100
     }
 
 
+    pub fn get_properties(&self) -> Vec<PropertyWithSplits> {
 
-    // will check if user has the skills for the job and return the trainers who taught the skill
-    #[private]
-    pub fn user_has_skills_for_job(&self, user: &AccountId, job_id: &U128) -> Option<Vec<AccountId>> {
-        let job = self.get_job_by_id(job_id).unwrap();
-        let job_skills = &job.skills;
-        let user_certs = self.certificates.get(&user).unwrap_or_default();
+        let mut properties = self.properties;
 
-        // number of skills user has for job
-        let mut number_of_matches = 0;
+        properties.into_iter().map(|property| {
 
-        // trainers that would be paid from the job
-        let mut trainers_for_skills = Vec::new();
+            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::Vec<PropertySplit>();
 
-        for skill in job_skills.clone() {
-            let mut current_skill_check = 0;
-
-            for cert in &user_certs {
-                if cert.skills.contains(&skill) {
-                    trainers_for_skills.push(&cert.issuer);
-                    if current_skill_check > 1 {
-                        continue
-                    }
-                    number_of_matches = number_of_matches + 1;
-                    current_skill_check = current_skill_check + 1;
-                }
+            PropertyWithSplits {
+                id: &property.id,
+                name: &property.name,
+                image: &property.image,
+                property_identifier: &property.property_identifier,
+                valuation: &property.valuation,
+                property_splits: splits
             }
-        }
-
-        let mut trainers = Vec::new();
-        for trainer in trainers_for_skills {
-            trainers.push(trainer.clone());
-        }
-
-        let percentage_match = number_of_matches * 100/u128::try_from(job_skills.len()).unwrap_or(1);
-        if percentage_match > 50 {
-            return Some(trainers);
-        }
-
-        None
+        }).collect()
     }
 
-    #[private]
-    pub fn course_exists(&self, course_id_: &U128) -> bool {
-        self.courses.contains_key(course_id_)
-    }
+    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<PropertyWithSplits> {
 
-    #[private]
-    pub fn job_exists(&self, job_id: &U128) -> bool {
-        self.jobs.contains_key(job_id)
-    }
+        let mut properties = self.properties;
 
-    #[private]
-    pub fn is_user_enrolled(&self, course_id_: &U128, user_id: &AccountId) -> bool {
-        for trainee in self.enrolments.get(course_id_).unwrap() {
-            if &trainee == user_id {
-                return true;
+        let prop_with_splits = properties.into_iter().map(|property| {
+
+            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::Vec<PropertySplit>();
+
+            let splits_of_owner = splits.into_iter().filter(|split| *split.owner == account_id).collect::Vec<PropertySplit>();
+
+            PropertyWithSplits {
+                id: &property.id,
+                name: &property.name,
+                image: &property.image,
+                property_identifier: &property.property_identifier,
+                valuation: &property.valuation,
+                property_splits: splits_of_owner
             }
-        }
-        false
+        }).collect::Vec<PropertyWithSplits>();
+
+        prop_with_splits.filter(|property| *property.property_splits.len() > 0).collect::Vec<PropertyWithSplits>();
     }
 
-    #[private]
-    #[result_serializer(borsh)]
-    pub fn get_course_by_id(&self, course_id_: &U128) -> Option<Course> {
-        self.courses.get(&course_id_)
+
+    pub fn get_split_offers(&self, property_split_id) -> Vec<PurchaseOffer> {
+
+        self.offers.get(&property_split_id).unwrap_or(Vec::new())
     }
 
-    #[private]
-    #[result_serializer(borsh)]
-    pub fn get_job_by_id(&self, job_id_: &U128) -> Option<Job> {
-        self.jobs.get(&job_id_)
+    pub fn get_splits_on_sale(&self) -> Vec<PropertySplit> {
+
+        self.property_splits.into_iter().filter(|split| *split.on_sale).collect::Vec<PropertySplit>()
     }
 
-    #[private]
-    #[result_serializer(borsh)]
-    pub fn get_job_aplication(&self, job_id_: &U128, applicant: &AccountId) -> Option<JobApplication> {
-        self.job_applications.get(job_id_).unwrap().get(applicant)
-    }
 
     #[private]
-    pub fn on_mint_nft_callback(&mut self, split_id: &U128, split_identifier: &String, property_id: &u64, #[callback_unwrap] token: Token) {
-        let mut property_splits = self.properties[&property_id].property_splits;
+    pub fn on_mint_nft_callback(&mut self, property_id: &U128, split_identifier: &String, property_id: &u64, #[callback_unwrap] token: Token) {
+        let splits_count = self.property_splits.len();
+        let split_id = U128::from(u128::from(splits_count) + 1)
+
+        let token_minted = token.clone();
         
         let property_split = PropertySplit {
             id: split_id.clone(),
             split_identifier: split_identifier,
-            token_id: token.token_id,
-            last_sale_date: 0
+            token_id: token_minted.token_id,
+            token_metadata: token_minted.metadata.unwrap(),
+            owner: env::signer_account_id(),
+            last_sale_date: 0,
+            on_sale: false
         }
 
-        property_splits.push(property_split);
+        self.property_split_by_token_id.insert(&token.token_id, &property_split);
 
-        self.properties[&property_id].property_splits = property_splits;
+        self.properties[property_id.0].split_ids.push(split_id);
+
+        self.property_splits.push(property_split);
+
+    }
+
+    #[private]
+    pub fn on_transfer_token_callback_on_sale(&self, property_split_id: &U128, property_split: &PropertySplit, buyer: &AccountId) -> Vec<PropertySplit> {
+
+        let token_id = property_split.token_id;
+
+        let mut new_property_split = property_split;
+
+        new_property_split.owner = buyer;
+        new_property_split.last_sale_date = env::block_timestamp_ms()
+
+        self.property_splits[property_split_id.0 - 1] = new_property_split;
+        
+        self.property_split_by_token_id.insert(&token_id, new_property_split);
+
+        self.offers.insert(&property_split_id, &Vec::new());
     }
 
     
