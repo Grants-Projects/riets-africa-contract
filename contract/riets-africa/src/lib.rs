@@ -129,7 +129,7 @@ impl RietsAfrica {
 
         let new_property_id = self.properties.len();
 
-        let mut property = Property::new(U128::from(u128::from(&new_property_id) + 1), name, identifier.clone(), valuation, image_url);
+        let mut property = Property::new(U128::from(u128::from(new_property_id.clone() as u64) + 1), name, identifier.clone(), valuation, image_url);
         self.properties.push(property);
 
         let mut split_id = 1;
@@ -163,10 +163,11 @@ impl RietsAfrica {
 
     pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: U128) {
         require!(env::signer_account_id() == self.owner, "Not authorised");
-        let mut property = self.properties[u128::from(&property_id)];
+        let id = property_id.clone();
+        self.properties[(id.0 - 1) as usize].set_valuation(new_valuation);
 
-        property.set_valuation(new_valuation);
-        self.properties[u128::from(&property_id)] = property;
+        // property.set_valuation(new_valuation);
+        // self.properties[u128::from(&property_id)] = property;
     }
 
     #[payable]
@@ -182,7 +183,7 @@ impl RietsAfrica {
 
         let mut previous_offers_on_split = self.offers.get(&property_split_id).unwrap_or(Vec::new());
 
-        let offer_id = U128::from(&previous_offers_on_split.len() + 1);
+        let offer_id = U128::from(u128::from((&previous_offers_on_split.len() as u64) + 1));
 
         let offer = PurchaseOffer {
             id: offer_id,
@@ -278,7 +279,7 @@ impl RietsAfrica {
         let property = self.properties[&property_split.property_id.0 - 1];
 
         let value = &property.valuation.0;
-        let splits = u128::from(property.split_ids.len());
+        let splits = u128::from(property.split_ids.len() as u64);
 
         let split_value = value*100/splits;
 
@@ -342,7 +343,7 @@ impl RietsAfrica {
 
     #[private]
     pub fn on_mint_nft_callback(&mut self, property_id: &U128, split_identifier: &String, property_id: &u64, #[callback_unwrap] token: Token) {
-        let splits_count = self.property_splits.len();
+        let splits_count = self.property_splits.len() as u64;
         let split_id = U128::from(u128::from(splits_count) + 1)
 
         let token_minted = token.clone();
