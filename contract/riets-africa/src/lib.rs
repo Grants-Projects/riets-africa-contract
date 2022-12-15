@@ -28,22 +28,22 @@ impl Property {
             image: image_,
             property_identifier: property_identifier_,
             valuation: valuation_,
-            split_ids: Vec::with_capacity(splits_)
+            split_ids: Vec::with_capacity(splits_ as usize)
         }
     }
 
-    pub fn set_valuation(&mut self, value: U128) -> bool {
+    pub fn set_valuation(&mut self, value: u128) -> bool {
         self.valuation = value;
         true
     }
 }
 
-pub struct PropertyWithSplits {
-    id: &U128,
-    name: &String,
-    image: &String,
-    property_identifier: &String,
-    valuation: &Balance,
+pub struct PropertyWithSplits<'a> {
+    id: &'a U128,
+    name: &'a String,
+    image: &'a String,
+    property_identifier: &'a String,
+    valuation: &'a Balance,
     property_splits: Vec<PropertySplit>,
 }
 
@@ -55,7 +55,7 @@ pub struct PropertySplit {
     token_id: TokenId,
     token_metadata: TokenMetadata,
     owner: AccountId,
-    last_sale_date: u64
+    last_sale_date: u64,
     on_sale: bool
 }
 
@@ -63,7 +63,7 @@ pub struct PropertySplit {
 pub struct PurchaseOffer {
     id: U128,
     value: Balance,
-    buyer: AccountId
+    buyer: AccountId,
     token_id: TokenId
 }
 
@@ -83,18 +83,13 @@ trait RietsToken {
     fn get_user_properties(
         &self,
         account_id: &AccountId
-    ) -> Vec<TokenId>
-
-    fn get_user_properties(
-        &self,
-        account_id: &AccountId
-    ) -> Vec<TokenId>
+    ) -> Vec<TokenId>;
 
     fn transfer_token(
         &self,
         token_id: TokenId, 
         receiver: AccountId
-    )
+    );
 }
 
 
@@ -102,7 +97,7 @@ trait RietsToken {
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct RietsAfrica {
     properties: Vec<Property>,
-    property_splits: Vec<PropertySplit>
+    property_splits: Vec<PropertySplit>,
     owner: AccountId,
     property_split_by_token_id: LookupMap<TokenId, PropertySplit>,
     offers: LookupMap<U128, Vec<PurchaseOffer>>
@@ -125,7 +120,7 @@ impl Default for RietsAfrica {
 impl RietsAfrica {
 
     pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: Balance, doc_urls: Vec<String>) {
-        require!(doc_urls.len() == splits, "JSON length supplied do not match number of splits");
+      
 
         let new_property_id = self.properties.len();
 
@@ -134,13 +129,13 @@ impl RietsAfrica {
 
         let mut split_id = 1;
 
-        for let doc in doc_urls {
+        for  doc in doc_urls {
 
             let id_length = &split_id.to_string().chars().count();
-            let property_identifier = property_splits.property_identifier;
+            let property_identifier = identifier;
             let zero_spacing = "0".repeat(4 - id_length);
 
-            let split_identifier = format!({}{}{}, property_identifier.to_string(), zero_spacing, &split_id.to_string());
+            let split_identifier = format!("{}{}{}", property_identifier.to_string(), zero_spacing, &split_id.to_string());
 
             split_id += 1;
 
@@ -154,14 +149,14 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_mint_nft_callback(U128::from(u128::from(&new_property_id) + 1), &split_identifier, &new_property_id) 
+                    .on_mint_nft_callback(U128::from(u128::from(&new_property_id) + 1), &split_identifier) 
             );
 
             
         }
     }
 
-    pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: U128) {
+    pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: Balance) {
         require!(env::signer_account_id() == self.owner, "Not authorised");
         let id = property_id.clone();
         self.properties[(id.0 - 1) as usize].set_valuation(new_valuation);
@@ -173,13 +168,13 @@ impl RietsAfrica {
     #[payable]
     pub fn make_property_offer(&mut self, property_split_id: U128) -> PurchaseOffer {
         
-        let choice_split = self.property_splits[&property_split_id.0 - 1];
+        let choice_split = &self.property_splits[&property_split_id.0 - 1];
 
         let buyer = env::signer_account_id();
 
         require!(&buyer != self.owner && &buyer != &choice_split.owner, "Not authorized");
 
-        require!(env::attached_deposit() >= get_split_value(&property_split_id), "Not sufficient deposit to make offer");
+        require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to make offer");
 
         let mut previous_offers_on_split = self.offers.get(&property_split_id).unwrap_or(Vec::new());
 
@@ -203,7 +198,7 @@ impl RietsAfrica {
 
     pub fn sell_property_to_offer(&mut self, property_split_id: U128, offer_id: U128) {
 
-        let mut property_split = self.property_splits[&property_split_id.0 - 1];
+        let mut property_split = &self.property_splits[&property_split_id.0 - 1];
 
         require!(if &property_split.last_sale_date == 0 {
             env::signer_account_id() == self.owner
@@ -229,7 +224,7 @@ impl RietsAfrica {
 
     pub fn place_property_split_on_sale(&mut self, property_split_id: U128) -> PropertySplit {
 
-        let mut property_split = self.property_splits[&property_split_id.0 - 1];
+        let mut property_split = &self.property_splits[&property_split_id.0 - 1];
         let token_id = &property_split.token_id;
 
         require!(if &property_split.last_sale_date == 0 {
@@ -240,7 +235,7 @@ impl RietsAfrica {
 
         property_split.on_sale = true;
 
-        self.property_split_by_token_id.insert(&token_id, &property_split)
+        self.property_split_by_token_id.insert(&token_id, &property_split);
 
         self.property_splits[&property_split_id.0 - 1] = property_split;
 
@@ -249,7 +244,7 @@ impl RietsAfrica {
 
     pub fn buy_from_sale(&mut self, property_split_id: U128) {
 
-        let mut property_split = self.property_splits[&property_split_id.0 - 1];
+        let mut property_split = &self.property_splits[&property_split_id.0 - 1];
 
         let buyer = env::signer_account_id();
 
@@ -257,12 +252,12 @@ impl RietsAfrica {
 
         require!(&property_split.on_sale, "Property is not available for sale");
 
-        require!(env::attached_deposit() >= get_split_value(&property_split_id), "Not sufficient deposit to make offer");
+        require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to make offer");
 
         ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
             .transfer_token(
-                offer.token_id,
-                offer.buyer)
+                property_split.token_id,
+                buyer.clone())
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
@@ -274,9 +269,9 @@ impl RietsAfrica {
     // returns the value of a split based on the actual property valuation
     pub fn get_split_value(&self, property_split_id: &U128) -> Balance {
 
-        let mut property_split = self.property_splits[property_split_id.0 - 1];
+        let mut property_split = &self.property_splits[property_split_id.0 - 1];
 
-        let property = self.properties[&property_split.property_id.0 - 1];
+        let property = &self.properties[&property_split.property_id.0 - 1];
 
         let value = &property.valuation.0;
         let splits = u128::from(property.split_ids.len() as u64);
@@ -289,11 +284,11 @@ impl RietsAfrica {
 
     pub fn get_properties(&self) -> Vec<PropertyWithSplits> {
 
-        let mut properties = self.properties;
+        let mut properties = &self.properties;
 
         properties.into_iter().map(|property| {
 
-            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::Vec<PropertySplit>();
+            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::<Vec<PropertySplit>>();
 
             PropertyWithSplits {
                 id: &property.id,
@@ -308,13 +303,13 @@ impl RietsAfrica {
 
     pub fn get_user_properties(&self, account_id: AccountId) -> Vec<PropertyWithSplits> {
 
-        let mut properties = self.properties;
+        let mut properties = &self.properties;
 
         let prop_with_splits = properties.into_iter().map(|property| {
 
-            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::Vec<PropertySplit>();
+            let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[split_id.0 - 1]).collect::<Vec<PropertySplit>>();
 
-            let splits_of_owner = splits.into_iter().filter(|split| *split.owner == account_id).collect::Vec<PropertySplit>();
+            let splits_of_owner = splits.into_iter().filter(|split| *split.owner == account_id).collect::<Vec<PropertySplit>>();
 
             PropertyWithSplits {
                 id: &property.id,
@@ -324,27 +319,27 @@ impl RietsAfrica {
                 valuation: &property.valuation,
                 property_splits: splits_of_owner
             }
-        }).collect::Vec<PropertyWithSplits>();
+        });
 
-        prop_with_splits.filter(|property| *property.property_splits.len() > 0).collect::Vec<PropertyWithSplits>();
+        prop_with_splits.filter(|property| *property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>();
     }
 
 
-    pub fn get_split_offers(&self, property_split_id) -> Vec<PurchaseOffer> {
+    pub fn get_split_offers(&self, property_split_id: U128) -> Vec<PurchaseOffer> {
 
         self.offers.get(&property_split_id).unwrap_or(Vec::new())
     }
 
-    pub fn get_splits_on_sale(&self) -> Vec<PropertySplit> {
-
-        self.property_splits.into_iter().filter(|split| *split.on_sale).collect::Vec<PropertySplit>()
+    pub fn get_splits_on_sale(&self) -> Vec<&PropertySplit> {
+        let splits = &self.property_spilts;
+         splits.into_iter().filter(|split| *split.on_sale).collect::<Vec<&PropertySplit>>()
     }
 
 
     #[private]
-    pub fn on_mint_nft_callback(&mut self, property_id: &U128, split_identifier: &String, property_id: &u64, #[callback_unwrap] token: Token) {
+    pub fn on_mint_nft_callback(&mut self, property_id: &U128, split_identifier: &String, #[callback_unwrap] token: Token) {
         let splits_count = self.property_splits.len() as u64;
-        let split_id = U128::from(u128::from(splits_count) + 1)
+        let split_id = U128::from(u128::from(splits_count) + 1);
 
         let token_minted = token.clone();
         
@@ -356,11 +351,11 @@ impl RietsAfrica {
             owner: env::signer_account_id(),
             last_sale_date: 0,
             on_sale: false
-        }
+        };
 
         self.property_split_by_token_id.insert(&token.token_id, &property_split);
 
-        self.properties[property_id.0].split_ids.push(split_id);
+        self.properties[property_id.0 as usize].split_ids.push(split_id);
 
         self.property_splits.push(property_split);
 
@@ -374,7 +369,7 @@ impl RietsAfrica {
         let mut new_property_split = property_split;
 
         new_property_split.owner = buyer;
-        new_property_split.last_sale_date = env::block_timestamp_ms()
+        new_property_split.last_sale_date = env::block_timestamp_ms();
 
         self.property_splits[property_split_id.0 - 1] = new_property_split;
         
