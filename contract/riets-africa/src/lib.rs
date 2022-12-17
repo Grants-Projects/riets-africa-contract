@@ -150,7 +150,7 @@ impl RietsAfrica {
         let mut property = Property::new(
             U128::from(u128::from(new_property_id.clone() as u64) + 1), 
             name, 
-            doc_urls.len() as u8
+            doc_urls.len() as u8,
             identifier.clone(), 
             valuation, 
             image_url
