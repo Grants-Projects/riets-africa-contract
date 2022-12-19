@@ -1,6 +1,6 @@
 
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LookupMap, LazyOption, LookupSet};
+use near_sdk::collections::{LookupMap};
 use near_sdk::json_types::U128;
 use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, ext_contract, require};
 use near_contract_standards::non_fungible_token::{Token, TokenId, metadata::TokenMetadata};
@@ -45,7 +45,7 @@ pub struct PropertyWithSplits<'a> {
     image: &'a String,
     property_identifier: &'a String,
     valuation: &'a Balance,
-    property_splits: Vec<&'a PropertySplit>,
+    property_splits: Vec<PropertySplit>,
 }
 
 pub struct PropertyWithSplit {
@@ -245,7 +245,7 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_transfer_token_callback_on_sale(property_split_id, property_split.token_id, offer.buyer) 
+                    .on_transfer_token_callback_on_sale(property_split_id, &property_split.token_id, offer.buyer) 
             );
 
     }
@@ -288,7 +288,7 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_transfer_token_callback_on_sale(property_split_id, property_split.token_id, buyer) 
+                    .on_transfer_token_callback_on_sale(property_split_id, &property_split.token_id, buyer) 
             );
     }
 
@@ -300,7 +300,7 @@ impl RietsAfrica {
 
         let property = &self.properties[(property_split.property_id.0 - 1) as usize];
 
-        let value = property.valuation.0;
+        let value = property.valuation;
         let splits = u128::from(property.split_ids.len() as u64);
 
         let split_value = value*100/splits;
@@ -309,33 +309,33 @@ impl RietsAfrica {
     }
 
 
-    pub fn get_properties(&self) -> Vec<PropertyWithSplit> {
+    pub fn get_properties(&self) -> Vec<PropertyWithSplits> {
 
         let mut properties = &self.properties;
 
         properties.into_iter().map(|property| {
 
             let splits = &property.split_ids.into_iter().map(|split_id| self.property_splits[(split_id.0 as usize) - 1]).collect::<Vec<PropertySplit>>();
-            PropertyWithSplit::from(property)
+            //PropertyWithSplit::from(property)
 
-            // PropertyWithSplits {
-            //     id: &property.id,
-            //     name: &property.name,
-            //     image: &property.image,
-            //     property_identifier: &property.property_identifier,
-            //     valuation: &property.valuation,
-            //     property_splits: splits.to_vec()
-            // }
-        }).collect::<Vec<PropertyWithSplit>>()
+            PropertyWithSplits {
+                id: &property.id,
+                name: &property.name,
+                image: &property.image,
+                property_identifier: &property.property_identifier,
+                valuation: &property.valuation,
+                property_splits: splits
+            }
+        }).collect::<Vec<PropertyWithSplits>>()
     }
 
-    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<&PropertyWithSplits> {
+    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<PropertyWithSplits> {
 
         let mut properties = &self.properties;
 
         let prop_with_splits = properties.into_iter().map(|property| {
 
-            let splits = &property.split_ids.into_iter().map(|split_id| &self.property_splits[(split_id.clone().0 as usize) - 1]).collect::<Vec<&PropertySplit>>();
+            let splits = property.split_ids.into_iter().map(|split_id| &self.property_splits[(split_id.clone().0 as usize) - 1]).collect::<Vec<&PropertySplit>>();
 
             let splits_of_owner = splits.into_iter().filter(|split| split.owner == account_id).collect::<Vec<&PropertySplit>>();
 
@@ -349,7 +349,7 @@ impl RietsAfrica {
             }
         });
 
-        prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<&PropertyWithSplits>>()
+        prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>()
     }
 
 
@@ -404,7 +404,7 @@ impl RietsAfrica {
 
         self.offers.insert(&property_split_id, &Vec::new());
 
-        self.property_splits[(property_split_id.0 - 1) as usize] = *&property_split;
+        self.property_splits[(property_split_id.0 - 1) as usize] = *property_split;
     }
 
     
