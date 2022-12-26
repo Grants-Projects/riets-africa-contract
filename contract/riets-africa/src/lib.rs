@@ -39,6 +39,7 @@ impl Property {
     }
 }
 
+#[derive(BorshDeserialize, BorshSerialize)]
 pub struct PropertyWithSplits<'a> {
     id: U128,
     name: String,
@@ -48,6 +49,7 @@ pub struct PropertyWithSplits<'a> {
     property_splits: Vec<&'a PropertySplit>,
 }
 
+#[derive(BorshDeserialize, BorshSerialize)]
 pub struct PropertyWithSplit {
     id: U128,
     name: String,
@@ -310,7 +312,7 @@ impl RietsAfrica {
         split_value/100
     }
 
-
+    #[result_serializer(borsh)]
     pub fn get_properties(&self) -> Vec<PropertyWithSplits> {
 
         let properties = &self.properties;
@@ -356,12 +358,13 @@ impl RietsAfrica {
     //     prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>()
     // }
 
-
+    #[result_serializer(borsh)]
     pub fn get_split_offers(&self, property_split_id: U128) -> Vec<PurchaseOffer> {
 
         self.offers.get(&property_split_id).unwrap_or(Vec::new())
     }
 
+    #[result_serializer(borsh)]
     pub fn get_splits_on_sale(&self) -> Vec<&PropertySplit> {
         let splits = &self.property_splits;
          splits.into_iter().filter(|split| split.on_sale).collect::<Vec<&PropertySplit>>()
