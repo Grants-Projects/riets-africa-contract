@@ -1,12 +1,12 @@
 
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LookupMap};
+use near_sdk::collections::{LookupMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, ext_contract, require};
 use near_contract_standards::non_fungible_token::{Token, TokenId, metadata::TokenMetadata};
 use std::convert::From;
 
-pub const NFT_CONTRACT: &str = "certificate.eakazi.testnet";
+pub const NFT_CONTRACT: &str = "token.reit-africa.testnet";
 pub const XCC_GAS: Gas = Gas(20000000000000);
 
 
@@ -144,7 +144,7 @@ impl Default for RietsAfrica {
 #[near_bindgen]
 impl RietsAfrica {
 
-    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: Balance, doc_urls: Vec<String>) {
+    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: Balance, doc_urls: Vector<String>) {
       
 
         let new_property_id = U128::from(u128::from(self.properties.len() as u64) + 1);
