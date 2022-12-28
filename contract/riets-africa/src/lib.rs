@@ -2,6 +2,7 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, Vector};
 use near_sdk::json_types::U128;
+use near_sdk::serde::Serialize;
 use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, ext_contract, require};
 use near_contract_standards::non_fungible_token::{Token, TokenId, metadata::TokenMetadata};
 use std::convert::From;
@@ -10,7 +11,8 @@ pub const NFT_CONTRACT: &str = "token.reit-africa.testnet";
 pub const XCC_GAS: Gas = Gas(20000000000000);
 
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(Clone, BorshDeserialize, BorshSerialize, Serialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct Property {
     id: U128,
     name: String,
@@ -22,14 +24,14 @@ pub struct Property {
 
 
 impl Property {
-    pub fn new(id_: U128, name_: String, splits_: u8, property_identifier_: String, valuation_: Balance, image_: String) -> Self {
+    pub fn new(id_: U128, name_: String, property_identifier_: String, valuation_: Balance, image_: String) -> Self {
         Self {
-            id: id_,
+            id: id_.clone(),
             name: name_,
             image: image_,
             property_identifier: property_identifier_,
             valuation: valuation_,
-            split_ids: Vec::with_capacity(splits_ as usize)
+            split_ids: Vec::new()
         }
     }
 
@@ -39,17 +41,19 @@ impl Property {
     }
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
-pub struct PropertyWithSplits<'a> {
+#[derive(Clone, BorshDeserialize, BorshSerialize, Serialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct PropertyWithSplits {
     id: U128,
     name: String,
     image: String,
     property_identifier: String,
     valuation: Balance,
-    property_splits: Vec<&'a PropertySplit>,
+    property_splits: Vec<PropertySplit>,
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(Clone, BorshDeserialize, BorshSerialize, Serialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct PropertyWithSplit {
     id: U128,
     name: String,
@@ -62,7 +66,7 @@ pub struct PropertyWithSplit {
 impl From<Property> for PropertyWithSplit {
     fn from(property: Property) -> Self {
         Self {
-            id: property.id,
+            id: property.id.clone(),
             name: property.name,
             image: property.image,
             property_identifier: property.property_identifier,
@@ -72,7 +76,8 @@ impl From<Property> for PropertyWithSplit {
     }
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(Clone, BorshDeserialize, BorshSerialize, Serialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct PropertySplit {
     id: U128,
     split_identifier: String,
@@ -84,7 +89,8 @@ pub struct PropertySplit {
     on_sale: bool
 }
 
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(Clone, BorshDeserialize, BorshSerialize, Serialize)]
+#[serde(crate = "near_sdk::serde")]
 pub struct PurchaseOffer {
     id: U128,
     value: Balance,
@@ -121,18 +127,18 @@ trait RietsToken {
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct RietsAfrica {
-    properties: Vec<Property>,
-    property_splits: Vec<PropertySplit>,
+    properties: Vector<Property>,
+    property_splits: Vector<PropertySplit>,
     owner: AccountId,
     property_split_by_token_id: LookupMap<TokenId, PropertySplit>,
-    offers: LookupMap<U128, Vec<PurchaseOffer>>
+    offers: LookupMap<U128, Vector<PurchaseOffer>>
 }
 
 impl Default for RietsAfrica {
     fn default() -> Self {
         Self {
-            properties: Vec::new(),
-            property_splits: Vec::new(),
+            properties: Vector::new(b"k"),
+            property_splits: Vector::new(b"q"),
             owner: env::signer_account_id(),
             property_split_by_token_id: LookupMap::new(b"p"),
             offers: LookupMap::new(b"o")
@@ -144,20 +150,19 @@ impl Default for RietsAfrica {
 #[near_bindgen]
 impl RietsAfrica {
 
-    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: Balance, doc_urls: Vector<String>) {
+    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: U128, doc_urls: Vec<String>) {
       
 
-        let new_property_id = U128::from(u128::from(self.properties.len() as u64) + 1);
+        let new_property_id = U128::from(u128::from(self.properties.len()) + 1);
 
         let property = Property::new(
             new_property_id.clone(), 
             name, 
-            doc_urls.len() as u8,
             identifier.clone(), 
-            valuation, 
+            valuation.0, 
             image_url.clone()
         );
-        self.properties.push(property);
+        self.properties.push(&property);
 
         let mut split_id = 1;
 
@@ -188,10 +193,13 @@ impl RietsAfrica {
         }
     }
 
-    pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: Balance) {
+    pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: U128) {
         require!(env::signer_account_id() == self.owner, "Not authorised");
         let id = property_id.clone();
-        self.properties[(id.0 - 1) as usize].set_valuation(new_valuation);
+        let mut prop = self.properties.get((id.0 - 1) as u64).unwrap_or_else(|| env::panic_str("Property id does not exist"));
+        prop.set_valuation(new_valuation.0);
+
+        self.properties.replace((id.0 - 1) as u64, &prop);
 
         // property.set_valuation(new_valuation);
         // self.properties[u128::from(&property_id)] = property;
@@ -200,7 +208,7 @@ impl RietsAfrica {
     #[payable]
     pub fn make_property_offer(&mut self, property_split_id: U128) {
         
-        let choice_split = &self.property_splits[(property_split_id.clone().0 as usize) - 1];
+        let choice_split = self.property_splits.get((property_split_id.clone().0 -1) as u64).unwrap_or_else(|| env::panic_str("Split id does not exist"));
 
         let buyer = env::signer_account_id();
 
@@ -208,9 +216,9 @@ impl RietsAfrica {
 
         require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to make offer");
 
-        let mut previous_offers_on_split = self.offers.get(&property_split_id).unwrap_or(Vec::new());
+        let mut previous_offers_on_split = self.offers.get(&property_split_id).unwrap_or(Vector::new(b"l"));
 
-        let offer_id = U128::from(u128::from((previous_offers_on_split.len() as u64) + 1));
+        let offer_id = U128::from(u128::from((previous_offers_on_split.len()) + 1));
 
         let offer = PurchaseOffer {
             id: offer_id,
@@ -219,7 +227,7 @@ impl RietsAfrica {
             token_id: choice_split.token_id.clone()
         };
 
-        previous_offers_on_split.push(offer);
+        previous_offers_on_split.push(&offer);
 
         self.offers.insert(&property_split_id, &previous_offers_on_split);
 
@@ -228,7 +236,7 @@ impl RietsAfrica {
 
     pub fn sell_property_to_offer(&mut self, property_split_id: U128, offer_id: U128) {
 
-        let property_split = &self.property_splits[(property_split_id.clone().0 as usize) - 1];
+        let property_split = self.property_splits.get((property_split_id.clone().0 as u64) - 1).unwrap_or_else(|| env::panic_str("Split id does not exist"));
 
         require!(if property_split.last_sale_date == 0 {
             env::signer_account_id() == self.owner
@@ -238,7 +246,7 @@ impl RietsAfrica {
 
         let offers_on_split = self.offers.get(&property_split_id).unwrap_or_else(|| env::panic_str("No offer on this property"));
 
-        let offer = &offers_on_split[(offer_id.clone().0 as usize) - 1];
+        let offer = offers_on_split.get((offer_id.clone().0 as u64) - 1).unwrap_or_else(|| env::panic_str("Offer id does not exist"));
 
         ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
             .transfer_token(
@@ -254,10 +262,10 @@ impl RietsAfrica {
 
     pub fn place_property_split_on_sale(&mut self, property_split_id: U128) {
 
-        let property_split = &self.property_splits[(property_split_id.clone().0 as usize) - 1];
-        let token_id = &property_split.token_id;
+        let property_split = self.property_splits.get((property_split_id.clone().0 - 1) as u64).unwrap_or_else(|| env::panic_str("Split id does not exist"));
+        let token_id = property_split.token_id;
 
-        let mut split = self.property_split_by_token_id.get(token_id).unwrap();
+        let mut split = self.property_split_by_token_id.get(&token_id).unwrap();
 
         require!(if property_split.last_sale_date == 0 {
             env::signer_account_id() == self.owner
@@ -267,15 +275,15 @@ impl RietsAfrica {
 
         split.on_sale = true;
 
-        self.property_split_by_token_id.insert(token_id, &split);
+        self.property_split_by_token_id.insert(&token_id, &split);
 
-        self.property_splits[(property_split_id.clone().0 as usize) - 1] = split;
+        self.property_splits.replace((property_split_id.clone().0 - 1) as u64, &split);
 
     }
 
     pub fn buy_from_sale(&mut self, property_split_id: U128) {
 
-        let property_split = &self.property_splits[(property_split_id.clone().0 as usize) - 1];
+        let property_split = self.property_splits.get((property_split_id.clone().0 - 1) as u64).unwrap_or_else(|| env::panic_str("Split id does not exist"));
 
         let buyer = env::signer_account_id();
 
@@ -300,9 +308,9 @@ impl RietsAfrica {
     // returns the value of a split based on the actual property valuation
     pub fn get_split_value(&self, property_split_id: &U128) -> Balance {
 
-        let property_split = &self.property_splits[(property_split_id.clone().0 as usize) - 1];
+        let property_split = self.property_splits.get((property_split_id.clone().0 - 1) as u64).unwrap_or_else(|| env::panic_str("Split id does not exist"));
 
-        let property = &self.properties[(property_split.property_id.0 - 1) as usize];
+        let property = self.properties.get((property_split.property_id.0 - 1) as u64).unwrap();
 
         let value = property.valuation;
         let splits = u128::from(property.split_ids.len() as u64);
@@ -312,16 +320,14 @@ impl RietsAfrica {
         split_value/100
     }
 
-    #[result_serializer(borsh)]
+
     pub fn get_properties(&self) -> Vec<PropertyWithSplits> {
 
-        let properties = &self.properties;
-
-        properties.into_iter().map(|property| {
+        self.properties.iter().map(|property| {
 
             let ids = &property.split_ids;
 
-            let splits = ids.into_iter().map(|split_id| &self.property_splits[(split_id.0 as usize) - 1]).collect::<Vec<&PropertySplit>>();
+            let splits = ids.into_iter().map(|split_id| self.property_splits.get((split_id.0 as u64) - 1).unwrap()).collect::<Vec<PropertySplit>>();
             //PropertyWithSplit::from(property)
 
             PropertyWithSplits {
@@ -358,22 +364,28 @@ impl RietsAfrica {
     //     prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>()
     // }
 
-    #[result_serializer(borsh)]
+
     pub fn get_split_offers(&self, property_split_id: U128) -> Vec<PurchaseOffer> {
 
-        self.offers.get(&property_split_id).unwrap_or(Vec::new())
+        let offers = self.offers.get(&property_split_id).unwrap_or(Vector::new(b"n"));
+
+        let res = Vec::new();
+        if offers.len() > 0 {
+            offers.iter().map(|offer| offer).collect()
+        } else {
+            res
+        }
     }
 
-    #[result_serializer(borsh)]
-    pub fn get_splits_on_sale(&self) -> Vec<&PropertySplit> {
-        let splits = &self.property_splits;
-         splits.into_iter().filter(|split| split.on_sale).collect::<Vec<&PropertySplit>>()
+
+    pub fn get_splits_on_sale(&self) -> Vec<PropertySplit> {
+        self.property_splits.iter().filter(|split| split.on_sale).collect()
     }
 
 
     #[private]
     pub fn on_mint_nft_callback(&mut self, property_id: U128, split_identifier: String, #[callback_unwrap] token: Token) {
-        let splits_count = self.property_splits.len() as u64;
+        let splits_count = self.property_splits.len();
         let split_id = U128::from(u128::from(splits_count) + 1);
 
         let token_minted = token.clone();
@@ -391,18 +403,22 @@ impl RietsAfrica {
 
         self.property_split_by_token_id.insert(&token.token_id, &property_split);
 
-        self.properties[(property_id.0 - 1) as usize].split_ids.push(split_id);
+        let mut prop = self.properties.get((property_id.0 - 1) as u64).unwrap();
 
-        self.property_splits.push(property_split);
+        prop.split_ids.push(split_id);
+
+        self.properties.replace((property_id.0 - 1) as u64, &prop);
+
+        self.property_splits.push(&property_split);
 
     }
 
     #[private]
     pub fn on_transfer_token_callback_on_sale(&mut self, property_split_id: U128, property_token_id: &TokenId, buyer: AccountId) {
 
-        let property_split = &self.property_splits[(property_split_id.0 - 1) as usize];
-        let token_id = &property_split.token_id;
-        let mut split = self.property_split_by_token_id.get(token_id).unwrap();
+        let property_split = self.property_splits.get((property_split_id.0 - 1) as u64).unwrap();
+        let token_id = property_split.token_id;
+        let mut split = self.property_split_by_token_id.get(property_token_id).unwrap();
 
         split.owner = buyer;
         split.last_sale_date = env::block_timestamp_ms();
@@ -410,9 +426,11 @@ impl RietsAfrica {
         
         self.property_split_by_token_id.insert(property_token_id, &split);
 
-        self.offers.insert(&property_split.id, &Vec::new());
+        let empty = Vector::new(b"l");
 
-        self.property_splits[(property_split_id.0 - 1) as usize] = split;
+        self.offers.insert(&property_split.id, &empty);
+
+        self.property_splits.replace((property_split_id.0 - 1) as u64, &split);
     }
 
     
