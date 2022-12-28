@@ -163,7 +163,26 @@ impl RietsToken {
 
     pub fn get_token(&self, token_id: TokenId) -> Token {
 
-        self.tokens.nft_token(token_id).unwrap_or_else(|| env::panic_str("Token with provided ID doesn't exist"))
+        self.nft_token(token_id).unwrap_or_else(|| env::panic_str("Token with provided ID doesn't exist"))
+    }
+
+    pub fn nft_token(&self, token_id: TokenId) -> Option<Token> {
+
+        let owner_id = self.tokens.owner_by_id.get(&token_id)?;
+
+        let mut metadata = None;
+        let mut approved_account_ids = None;
+
+        if let Some(meta) = &self.tokens.token_metadata_by_id {
+            metadata = meta.get(&token_id);
+        } 
+
+        if let Some(appr) = &self.tokens.approvals_by_id {
+            approved_account_ids = appr.get(&token_id);
+        }
+
+        Some(Token { token_id, owner_id, metadata, approved_account_ids })
+
     }
 
     pub fn approve_token_spender(&mut self, spender: AccountId, token_id: TokenId) {
@@ -212,7 +231,7 @@ impl RietsToken {
     }
 }
 
-near_contract_standards::impl_non_fungible_token_core!(RietsToken, tokens);
+//near_contract_standards::impl_non_fungible_token_core!(RietsToken, tokens);
 near_contract_standards::impl_non_fungible_token_approval!(RietsToken, tokens);
 near_contract_standards::impl_non_fungible_token_enumeration!(RietsToken, tokens);
 
