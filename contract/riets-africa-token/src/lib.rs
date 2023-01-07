@@ -73,9 +73,9 @@ enum StorageKey {
 impl RietsToken {
 
     #[init]
-    pub fn new() -> Self {
+    pub fn new(owner_id: AccountId) -> Self {
         // require!(!env::state_exists(), "Already initialized");
-        let owner_id = AccountId::new_unchecked(String::from("riets-africa.testnet"));
+    
         let metadata = NFTContractMetadata {
                         spec: NFT_METADATA_SPEC.to_string(),
                         name: "Riets Africa Property Token".to_string(),
@@ -161,6 +161,11 @@ impl RietsToken {
         
     }
 
+
+    pub fn set_contract_owner(&mut self, account_id: AccountId) {
+        self.tokens.owner_id = account_id;
+    }
+
     pub fn get_token(&self, token_id: TokenId) -> Token {
 
         self.nft_token(token_id).unwrap_or_else(|| env::panic_str("Token with provided ID doesn't exist"))
@@ -212,7 +217,7 @@ impl RietsToken {
     }
 
     pub fn transfer_token(&mut self, token_id: TokenId, receiver: AccountId) {
-
+        require!(self.tokens.owner_id == env::predecessor_account_id(), "Unauthorized");
         let mut approval_id = None;
         let sender = env::predecessor_account_id();
 

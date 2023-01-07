@@ -150,7 +150,7 @@ impl Default for RietsAfrica {
 #[near_bindgen]
 impl RietsAfrica {
 
-    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: U128, doc_urls: Vec<String>) {
+    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: U128, doc_urls: String) {
       
 
         let new_property_id = U128::from(u128::from(self.properties.len()) + 1);
@@ -166,7 +166,9 @@ impl RietsAfrica {
 
         let mut split_id = 1;
 
-        for  doc in doc_urls {
+        let doc_splits = doc_urls.split(",");
+
+        for  doc in doc_splits {
 
             let id_length = &split_id.to_string().chars().count();
             let property_identifier = identifier.clone();
@@ -181,7 +183,7 @@ impl RietsAfrica {
                 self.owner.clone(),
                 identifier.clone(),
                 split_identifier.clone(),
-                doc,
+                doc.to_string(),
                 image_url.clone())
             .then(
                 Self::ext(env::current_account_id())
