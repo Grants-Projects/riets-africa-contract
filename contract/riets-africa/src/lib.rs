@@ -30,7 +30,7 @@ impl Property {
             id: id_.clone(),
             name: name_,
             image: image_,
-            metadata: metadata_
+            metadata: metadata_,
             property_identifier: property_identifier_,
             valuation: valuation_,
             split_ids: Vec::new()
@@ -140,12 +140,6 @@ pub struct RietsAfrica {
     offers: LookupMap<U128, Vector<PurchaseOffer>>
 }
 
-impl Default for RietsAfrica {
-    fn default() -> Self {
-        require!(env::state_exists(), "Not yet initialized");
-    }
-}
-
 
 #[near_bindgen]
 impl RietsAfrica {
@@ -253,17 +247,16 @@ impl RietsAfrica {
 
     pub fn revoke_offer(&mut self, property_split_id: U128) {
 
-        if let Some(offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
+        if let Some(mut offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
             offer.status = 2;
 
-            let all_offers = self.offers.get(&property_split_id).unwrap();
+            let mut all_offers = self.offers.get(&property_split_id).unwrap();
 
-            all_offers.replace(u64::from(offer.id.0 - 1), &offer);
+            all_offers.replace((offer.id.0 - 1) as u64, &offer);
 
             self.offers.insert(&property_split_id, &all_offers);
 
             Promise::new(offer.buyer).transfer(offer.value);
-
         } else {
             env::panic_str("No offer made yet on this split");
         }
@@ -274,13 +267,13 @@ impl RietsAfrica {
 
         let extra_amount = env::attached_deposit();
 
-        if let Some(offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
+        if let Some(mut offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
 
             offer.value += extra_amount;
 
-            let all_offers = self.offers.get(&property_split_id).unwrap();
+            let mut all_offers = self.offers.get(&property_split_id).unwrap();
 
-            all_offers.replace(u64::from(offer.id.0 - 1), &offer);
+            all_offers.replace((offer.id.0 - 1) as u64, &offer);
 
             self.offers.insert(&property_split_id, &all_offers);
 
@@ -398,6 +391,7 @@ impl RietsAfrica {
                 id: property.id.clone(),
                 name: property.name.clone(),
                 image: property.image.clone(),
+                metadata: property.metadata.clone(),
                 property_identifier: property.property_identifier.clone(),
                 valuation: property.valuation.clone(),
                 property_splits: splits
@@ -496,7 +490,7 @@ impl RietsAfrica {
 
         let offers_on_split = self.offers.get(&property_split_id).unwrap();
 
-        for offer in offers_on_split {
+        for offer in offers_on_split.iter() {
             if offer.buyer != buyer {
                 Promise::new(offer.buyer).transfer(offer.value);
             }
