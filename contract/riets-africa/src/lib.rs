@@ -17,6 +17,7 @@ pub struct Property {
     id: U128,
     name: String,
     image: String,
+    metadata: String,
     property_identifier: String,
     valuation: Balance,
     split_ids: Vec<U128>
@@ -24,11 +25,12 @@ pub struct Property {
 
 
 impl Property {
-    pub fn new(id_: U128, name_: String, property_identifier_: String, valuation_: Balance, image_: String) -> Self {
+    pub fn new(id_: U128, name_: String, property_identifier_: String, valuation_: Balance, image_: String, metadata_: String) -> Self {
         Self {
             id: id_.clone(),
             name: name_,
             image: image_,
+            metadata: metadata_
             property_identifier: property_identifier_,
             valuation: valuation_,
             split_ids: Vec::new()
@@ -47,6 +49,7 @@ pub struct PropertyWithSplits {
     id: U128,
     name: String,
     image: String,
+    metadata: String,
     property_identifier: String,
     valuation: Balance,
     property_splits: Vec<PropertySplit>,
@@ -58,6 +61,7 @@ pub struct PropertyWithSplit {
     id: U128,
     name: String,
     image: String,
+    metadata: String,
     property_identifier: String,
     valuation: Balance,
     property_splits: Vec<PropertySplit>,
@@ -69,6 +73,7 @@ impl From<Property> for PropertyWithSplit {
             id: property.id.clone(),
             name: property.name,
             image: property.image,
+            metadata: property.metadata,
             property_identifier: property.property_identifier,
             valuation: property.valuation,
             property_splits: Vec::new()
@@ -95,7 +100,8 @@ pub struct PurchaseOffer {
     id: U128,
     value: Balance,
     buyer: AccountId,
-    token_id: TokenId
+    token_id: TokenId,
+    status: u8
 }
 
 
@@ -136,6 +142,16 @@ pub struct RietsAfrica {
 
 impl Default for RietsAfrica {
     fn default() -> Self {
+        require!(env::state_exists(), "Not yet initialized");
+    }
+}
+
+
+#[near_bindgen]
+impl RietsAfrica {
+
+    #[init]
+    pub fn new() -> Self {
         Self {
             properties: Vector::new(b"k"),
             property_splits: Vector::new(b"q"),
@@ -144,13 +160,10 @@ impl Default for RietsAfrica {
             offers: LookupMap::new(b"o")
         }
     }
-}
 
 
-#[near_bindgen]
-impl RietsAfrica {
-
-    pub fn create_property(&mut self, name: String, image_url: String, identifier: String, valuation: U128, doc_urls: String) {
+    #[payable]
+    pub fn create_property(&mut self, name: String, image_url: String, metadata_url: String, identifier: String, valuation: U128, doc_urls: String) {
       
 
         let new_property_id = U128::from(u128::from(self.properties.len()) + 1);
@@ -160,7 +173,8 @@ impl RietsAfrica {
             name, 
             identifier.clone(), 
             valuation.0, 
-            image_url.clone()
+            image_url.clone(),
+            metadata_url.clone()
         );
         self.properties.push(&property);
 
@@ -215,6 +229,7 @@ impl RietsAfrica {
         let buyer = env::signer_account_id();
 
         require!(buyer != self.owner && buyer != choice_split.owner.clone(), "Not authorized");
+        require!(self.get_user_offer_on_split(property_split_id.clone(), buyer.clone()).is_none(), "Already has an offer on this split");
 
         require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to make offer");
 
@@ -226,13 +241,52 @@ impl RietsAfrica {
             id: offer_id,
             value: env::attached_deposit(),
             buyer: env::signer_account_id(),
-            token_id: choice_split.token_id.clone()
+            token_id: choice_split.token_id.clone(),
+            status: 0
         };
 
         previous_offers_on_split.push(&offer);
 
         self.offers.insert(&property_split_id, &previous_offers_on_split);
 
+    }
+
+    pub fn revoke_offer(&mut self, property_split_id: U128) {
+
+        if let Some(offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
+            offer.status = 2;
+
+            let all_offers = self.offers.get(&property_split_id).unwrap();
+
+            all_offers.replace(u64::from(offer.id.0 - 1), &offer);
+
+            self.offers.insert(&property_split_id, &all_offers);
+
+            Promise::new(offer.buyer).transfer(offer.value);
+
+        } else {
+            env::panic_str("No offer made yet on this split");
+        }
+    }
+
+    #[payable]
+    pub fn update_offer(&mut self, property_split_id: U128) {
+
+        let extra_amount = env::attached_deposit();
+
+        if let Some(offer) = self.get_user_offer_on_split(property_split_id.clone(), env::signer_account_id()) {
+
+            offer.value += extra_amount;
+
+            let all_offers = self.offers.get(&property_split_id).unwrap();
+
+            all_offers.replace(u64::from(offer.id.0 - 1), &offer);
+
+            self.offers.insert(&property_split_id, &all_offers);
+
+        } else {
+            env::panic_str("No offer made yet on this split");
+        }
     }
 
 
@@ -257,7 +311,7 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_transfer_token_callback_on_sale(property_split_id, &property_split.token_id, offer.buyer.clone()) 
+                    .on_transfer_token_callback_on_sale(property_split_id.clone(), &property_split.token_id, offer.buyer.clone(), offer.value) 
             );
 
     }
@@ -293,7 +347,7 @@ impl RietsAfrica {
 
         require!(property_split.on_sale, "Property is not available for sale");
 
-        require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to make offer");
+        require!(env::attached_deposit() >= self.get_split_value(&property_split_id), "Not sufficient deposit to buy");
 
         ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
             .transfer_token(
@@ -302,8 +356,16 @@ impl RietsAfrica {
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_transfer_token_callback_on_sale(property_split_id, &property_split.token_id, buyer) 
+                    .on_transfer_token_callback_on_sale(property_split_id, &property_split.token_id, buyer, env::attached_deposit()) 
             );
+    }
+
+
+    pub fn transfer_ownership(&mut self, new_owner: AccountId) {
+
+        require!(env::predecessor_account_id() == self.owner, "Unauthorized");
+
+        self.owner = new_owner;
     }
 
 
@@ -384,6 +446,20 @@ impl RietsAfrica {
         self.property_splits.iter().filter(|split| split.on_sale).collect()
     }
 
+    #[private]
+    pub fn get_user_offer_on_split(&self, property_split_id: U128, offerer: AccountId) -> Option<PurchaseOffer> {
+
+        let offers = self.offers.get(&property_split_id).unwrap_or(Vector::new(b"n"));
+
+        for offer in offers.iter() {
+            if offer.buyer == offerer {
+                return Some(offer);
+
+            }
+        }
+        None
+    }
+
 
     #[private]
     pub fn on_mint_nft_callback(&mut self, property_id: U128, split_identifier: String, #[callback_unwrap] token: Token) {
@@ -416,9 +492,20 @@ impl RietsAfrica {
     }
 
     #[private]
-    pub fn on_transfer_token_callback_on_sale(&mut self, property_split_id: U128, property_token_id: &TokenId, buyer: AccountId) {
+    pub fn on_transfer_token_callback_on_sale(&mut self, property_split_id: U128, property_token_id: &TokenId, buyer: AccountId, sale_value: Balance) {
+
+        let offers_on_split = self.offers.get(&property_split_id).unwrap();
+
+        for offer in offers_on_split {
+            if offer.buyer != buyer {
+                Promise::new(offer.buyer).transfer(offer.value);
+            }
+            
+        }
 
         let property_split = self.property_splits.get((property_split_id.0 - 1) as u64).unwrap();
+        Promise::new(property_split.owner).transfer(sale_value);
+
         let token_id = property_split.token_id;
         let mut split = self.property_split_by_token_id.get(property_token_id).unwrap();
 
