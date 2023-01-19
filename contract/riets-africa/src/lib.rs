@@ -3,7 +3,7 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, Vector};
 use near_sdk::json_types::U128;
 use near_sdk::serde::Serialize;
-use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, ext_contract, require};
+use near_sdk::{env, log, near_bindgen, AccountId, Balance, Gas, Promise, PanicOnDefault, ext_contract, require};
 use near_contract_standards::non_fungible_token::{Token, TokenId, metadata::TokenMetadata};
 use std::convert::From;
 
@@ -131,7 +131,7 @@ trait RietsToken {
 
 
 #[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+#[derive(BorshDeserialize, BorshSerialize, PanicOnDefault)]
 pub struct RietsAfrica {
     properties: Vector<Property>,
     property_splits: Vector<PropertySplit>,
