@@ -176,6 +176,8 @@ impl RietsAfrica {
 
         let doc_splits = doc_urls.split(",");
 
+        let each_cross_call_deposit = env::attached_deposit()/u128::from(doc_splits.clone().collect::<Vec<_>>().len() as u64);
+
         for  doc in doc_splits {
 
             let id_length = &split_id.to_string().chars().count();
@@ -187,6 +189,8 @@ impl RietsAfrica {
             split_id += 1;
 
             ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
+            .with_attached_deposit(each_cross_call_deposit)
+            .with_static_gas(XCC_GAS)
             .nft_mint(
                 self.owner.clone(),
                 identifier.clone(),
