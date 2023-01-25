@@ -115,7 +115,7 @@ impl RietsToken {
         doc_url: String,
         image_url: String,
     ) -> Token {
-        let title = format!("Property {property_identifier} Unit {split_identifier}");
+        let title = format!("Unit {split_identifier} of property {property_identifier}");
         let description = format!("Token for split {split_identifier} of property {property_identifier}");
         let token_metadata = TokenMetadata {
             title: Some(title),
@@ -134,6 +134,57 @@ impl RietsToken {
         let token_id = self.token_counter.increment().to_string();
         assert_eq!(env::predecessor_account_id(), self.tokens.owner_id, "Unauthorized");
         self.tokens.internal_mint(token_id, token_owner_id.clone(), Some(token_metadata))
+    }
+
+    #[payable]
+    pub fn multi_nft_mint(
+        &mut self,
+        token_owner_id: &AccountId,
+        property_identifier: String,
+        doc_urls: String,
+        image_url: String
+    ) -> Vec<(Token, String)> {
+        assert_eq!(env::predecessor_account_id(), self.tokens.owner_id, "Unauthorized");
+
+        let mut split_id = 1;
+        
+        let doc_splits = doc_urls.split(",");
+        let mut tokens = Vec::with_capacity(doc_splits.clone().collect::<Vec::<_>>().len());
+
+        for  doc in doc_splits {
+
+            let id_length = &split_id.to_string().chars().count();
+            let zero_spacing = "0".repeat(4 - id_length);
+
+            let split_identifier = format!("{}{}{}", property_identifier.to_string(), zero_spacing, &split_id.to_string());
+
+            let title = format!("Unit {split_id} of property {property_identifier}");
+            let description = format!("Token for split {split_id} of property {property_identifier}");
+            let token_metadata = TokenMetadata {
+                title: Some(title),
+                description: Some(description),
+                media: Some(image_url.clone()),
+                media_hash: Some(Base64VecU8::from(image_url.clone().as_bytes().to_vec())),
+                copies: Some(1u64),
+                issued_at: None,
+                expires_at: None,
+                starts_at: None,
+                updated_at: None,
+                extra: None,
+                reference: Some(doc.clone().to_string()),
+                reference_hash: Some(Base64VecU8::from(doc.as_bytes().to_vec())),
+            };
+
+            let token_id = self.token_counter.increment().to_string();
+            let token = self.tokens.internal_mint(token_id, token_owner_id.clone(), Some(token_metadata));
+
+            tokens.push((token, split_identifier));
+
+            split_id += 1;
+        }
+
+        tokens
+
     }
 
     pub fn get_user_properties(&self, account_id: AccountId) -> Vec<(TokenId, TokenMetadata)> {
@@ -216,7 +267,7 @@ impl RietsToken {
         
     }
 
-    pub fn transfer_token(&mut self, token_id: TokenId, receiver: AccountId) {
+    pub fn transfer_token(&mut self, token_id: TokenId, receiver: AccountId) -> AccountId {
         require!(self.tokens.owner_id == env::predecessor_account_id(), "Unauthorized");
         let mut approval_id = None;
         let sender = env::predecessor_account_id();
@@ -233,6 +284,8 @@ impl RietsToken {
         let memo = format!("Transfer for sale of property split with token ID {} from {} to {}", &token_id, previous_owner, &receiver);
 
         self.tokens.internal_transfer(&sender, &receiver, &token_id, approval_id.clone(), Some(memo));
+
+        self.tokens.owner_by_id.get(&token_id).unwrap()
     }
 }
 

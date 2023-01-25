@@ -117,6 +117,14 @@ trait RietsToken {
         image_url: String
     ) -> Token;
 
+    fn multi_nft_mint(
+        &self,
+        token_owner_id: AccountId,
+        property_identifier: String,
+        doc_urls: String,
+        image_url: String
+    ) -> Vec<(Token, String)>;
+
     fn get_user_properties(
         &self,
         account_id: &AccountId
@@ -126,7 +134,7 @@ trait RietsToken {
         &self,
         token_id: TokenId, 
         receiver: AccountId
-    );
+    ) -> AccountId;
 }
 
 
@@ -172,39 +180,25 @@ impl RietsAfrica {
         );
         self.properties.push(&property);
 
-        let mut split_id = 1;
+        // let mut split_id = 1;
 
-        let doc_splits = doc_urls.split(",");
+        // let doc_splits = doc_urls.split(",");
 
-        let each_cross_call_deposit = env::attached_deposit()/u128::from(doc_splits.clone().collect::<Vec<_>>().len() as u64);
+        // let each_cross_call_deposit = env::attached_deposit()/u128::from(doc_splits.clone().collect::<Vec<_>>().len() as u64);
 
-        for  doc in doc_splits {
-
-            let id_length = &split_id.to_string().chars().count();
-            let property_identifier = identifier.clone();
-            let zero_spacing = "0".repeat(4 - id_length);
-
-            let split_identifier = format!("{}{}{}", property_identifier.to_string(), zero_spacing, &split_id.to_string());
-
-            split_id += 1;
-
-            ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
-            .with_attached_deposit(each_cross_call_deposit)
-            .with_static_gas(XCC_GAS)
-            .nft_mint(
+        ext_nft_contract::ext(AccountId::new_unchecked(NFT_CONTRACT.to_string()))
+            .with_attached_deposit(env::attached_deposit())
+            .multi_nft_mint(
                 self.owner.clone(),
                 identifier.clone(),
-                split_identifier.clone(),
-                doc.to_string(),
-                image_url.clone())
+                doc_urls.clone(),
+                image_url)
             .then(
                 Self::ext(env::current_account_id())
                     .with_static_gas(XCC_GAS)
-                    .on_mint_nft_callback(new_property_id.clone(), split_identifier) 
+                    .on_mint_nft_callback(new_property_id.clone(), doc_urls) 
             );
 
-            
-        }
     }
 
     pub fn set_property_valuation(&mut self, property_id: U128, new_valuation: U128) {
@@ -403,28 +397,29 @@ impl RietsAfrica {
         }).collect::<Vec<PropertyWithSplits>>()
     }
 
-    // pub fn get_user_properties(&self, account_id: AccountId) -> Vec<PropertyWithSplits> {
+    pub fn get_user_properties(&self, account_id: AccountId) -> Vec<PropertyWithSplits> {
 
-    //     let mut properties = &self.properties;
+        let properties = &self.properties;
 
-    //     let prop_with_splits = properties.into_iter().map(|property| {
+        let prop_with_splits = properties.iter().map(|property| {
 
-    //         let splits = &property.split_ids.into_iter().map(|split_id| &self.property_splits[(split_id.clone().0 as usize) - 1]).collect::<Vec<PropertySplit>>();
+            let splits = property.split_ids.into_iter().map(|split_id| self.property_splits.get((split_id.clone().0 - 1) as u64).unwrap()).collect::<Vec<PropertySplit>>();
 
-    //         let splits_of_owner = splits.into_iter().filter(|split| split.owner == account_id).collect::<Vec<&PropertySplit>>();
+            let splits_of_owner = splits.into_iter().filter(|split| split.owner == account_id).collect::<Vec<PropertySplit>>();
 
-    //         PropertyWithSplits {
-    //             id: property.id.clone(),
-    //             name: property.name.clone(),
-    //             image: property.image.clone(),
-    //             property_identifier: property.property_identifier.clone(),
-    //             valuation: property.valuation.clone(),
-    //             property_splits: splits_of_owner
-    //         }
-    //     });
+            PropertyWithSplits {
+                id: property.id.clone(),
+                name: property.name.clone(),
+                image: property.image.clone(),
+                metadata: property.metadata.clone(),
+                property_identifier: property.property_identifier.clone(),
+                valuation: property.valuation.clone(),
+                property_splits: splits_of_owner
+            }
+        });
 
-    //     prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>()
-    // }
+        prop_with_splits.filter(|property| property.property_splits.len() > 0).collect::<Vec<PropertyWithSplits>>()
+    }
 
 
     pub fn get_split_offers(&self, property_split_id: U128) -> Vec<PurchaseOffer> {
@@ -460,37 +455,53 @@ impl RietsAfrica {
 
 
     #[private]
-    pub fn on_mint_nft_callback(&mut self, property_id: U128, split_identifier: String, #[callback_unwrap] token: Token) {
-        let splits_count = self.property_splits.len();
-        let split_id = U128::from(u128::from(splits_count) + 1);
+    pub fn on_mint_nft_callback(&mut self, property_id: U128, doc_urls: String, #[callback_unwrap] token_data: Vec<(Token, String)>) {
 
-        let token_minted = token.clone();
-        
-        let property_split = PropertySplit {
-            id: split_id.clone(),
-            split_identifier: split_identifier,
-            property_id: property_id.clone(),
-            token_id: token_minted.token_id,
-            token_metadata: token_minted.metadata.unwrap(),
-            owner: env::signer_account_id(),
-            last_sale_date: 0,
-            on_sale: false
-        };
+        let minted_count = token_data.len();
+        let doc_counts = doc_urls.split(",").collect::<Vec<_>>().len();
 
-        self.property_split_by_token_id.insert(&token.token_id, &property_split);
+        require!(minted_count == doc_counts, "NFT minting failed");
 
-        let mut prop = self.properties.get((property_id.0 - 1) as u64).unwrap();
 
-        prop.split_ids.push(split_id);
+        let mut splits_count = self.property_splits.len();
 
-        self.properties.replace((property_id.0 - 1) as u64, &prop);
+        for (token, split_identifier) in token_data {
 
-        self.property_splits.push(&property_split);
+            let split_id = U128::from(u128::from(splits_count) + 1);
+
+            let token_minted = token.clone();
+
+            let property_split = PropertySplit {
+                id: split_id.clone(),
+                split_identifier: split_identifier,
+                property_id: property_id.clone(),
+                token_id: token_minted.token_id,
+                token_metadata: token_minted.metadata.unwrap(),
+                owner: env::signer_account_id(),
+                last_sale_date: 0,
+                on_sale: true
+            };
+
+            self.property_split_by_token_id.insert(&token.token_id, &property_split);
+
+            let mut prop = self.properties.get((property_id.0 - 1) as u64).unwrap();
+
+            prop.split_ids.push(split_id);
+
+            self.properties.replace((property_id.0 - 1) as u64, &prop);
+
+            self.property_splits.push(&property_split);
+
+            splits_count += 1;
+
+        }
 
     }
 
     #[private]
-    pub fn on_transfer_token_callback_on_sale(&mut self, property_split_id: U128, property_token_id: &TokenId, buyer: AccountId, sale_value: Balance) {
+    pub fn on_transfer_token_callback_on_sale(&mut self, property_split_id: U128, property_token_id: &TokenId, buyer: AccountId, sale_value: Balance, #[callback_unwrap] new_owner: AccountId) {
+
+        require!(new_owner == buyer, "NFT Transfer on Sale failed");
 
         let offers_on_split = self.offers.get(&property_split_id).unwrap();
 
